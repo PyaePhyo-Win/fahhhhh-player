@@ -88,6 +88,7 @@ FahhPlayer/
     Assets.xcassets/
     fahhhhh.mp3
   FahhPlayer.xcodeproj/
+  export_app.sh
   README.md
 ```
 
