@@ -33,3 +33,5 @@ Carthage/Build/
 # Temporary files
 *.swp
 *.tmp
+
+.fake

@@ -48,6 +48,8 @@ final class PowerObserver: ObservableObject {
 
     // MARK: - File Selection & Bookmarking
     func selectCustomSound() {
+        activateForegroundUI()
+
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
@@ -231,11 +233,17 @@ final class PowerObserver: ObservableObject {
     // MARK: - Alerts
     @discardableResult
     private func presentAlert(message: String, info: String, buttons: [String]) -> NSApplication.ModalResponse {
+        activateForegroundUI()
+
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = message
         alert.informativeText = info
         for title in buttons { alert.addButton(withTitle: title) }
         return alert.runModal()
+    }
+
+    private func activateForegroundUI() {
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

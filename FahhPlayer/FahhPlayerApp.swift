@@ -10,18 +10,19 @@ import SwiftUI
 @main
 struct FahhPlayerApp: App {
     @StateObject private var powerObserver = PowerObserver()
+    @StateObject private var launchAtLoginController = LaunchAtLoginController()
 
     var body: some Scene {
-        WindowGroup {
+        MenuBarExtra {
             ContentView()
                 .environmentObject(powerObserver)
+                .environmentObject(launchAtLoginController)
+                .frame(width: 360)
+        } label: {
+            Image("StatusBarIcon")
+                .renderingMode(.original)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
-
-        Settings {
-            SoundControlPanel()
-                .environmentObject(powerObserver)
-                .padding(24)
-                .frame(width: 440)
-        }
+        .menuBarExtraStyle(.window)
     }
 }

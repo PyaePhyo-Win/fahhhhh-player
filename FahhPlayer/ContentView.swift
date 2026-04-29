@@ -8,25 +8,67 @@
 import SwiftUI
 
 struct ContentView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("FahhPlayer")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+    @EnvironmentObject private var launchAtLoginController: LaunchAtLoginController
 
-                Text("Choose the sound that plays when your Mac switches from AC power to battery.")
-                    .font(.title3)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    Image("StatusBarIcon")
+                        .resizable()
+                        .renderingMode(.original)
+                        .frame(width: 22, height: 22)
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+                    Text("FahhPlayer")
+                        .font(.title2.weight(.semibold))
+                }
+
+                Text("Runs in the menu bar and plays your sound when AC power switches to battery.")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
             SoundControlPanel()
 
-            Label("Power monitoring is active as soon as the app launches.", systemImage: "bolt.badge.clock")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Launch at Login", isOn: Binding(
+                        get: { launchAtLoginController.isEnabled },
+                        set: { launchAtLoginController.setEnabled($0) }
+                    ))
+
+                    Text(launchAtLoginController.statusDescription)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    if let errorMessage = launchAtLoginController.errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } label: {
+                Label("Startup", systemImage: "power.circle.fill")
+            }
+
+            Divider()
+
+            HStack {
+                Label("Power monitoring becomes active as soon as the app launches.", systemImage: "bolt.badge.clock")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
         }
-        .padding(28)
-        .frame(minWidth: 500, idealWidth: 540, minHeight: 320)
+        .padding(16)
+        .frame(width: 360)
     }
 }
 
@@ -34,7 +76,7 @@ struct SoundControlPanel: View {
     @EnvironmentObject private var powerObserver: PowerObserver
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     LabeledContent("Current sound") {
@@ -55,7 +97,7 @@ struct SoundControlPanel: View {
                 Label("Sound Setup", systemImage: "speaker.wave.3.fill")
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Button("Choose Sound") {
                     powerObserver.selectCustomSound()
                 }
@@ -81,4 +123,5 @@ struct SoundControlPanel: View {
 #Preview {
     ContentView()
         .environmentObject(PowerObserver())
+        .environmentObject(LaunchAtLoginController())
 }
