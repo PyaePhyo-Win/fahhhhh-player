@@ -13,20 +13,81 @@ import AVFoundation
 import IOKit.ps
 import UniformTypeIdentifiers
 
+enum SoundEvent: String, CaseIterable, Identifiable {
+    case powerSupply
+    case terminalCommandError
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .powerSupply:
+            return "Power Supply Sound"
+        case .terminalCommandError:
+            return "Terminal Command Error Sound"
+        }
+    }
+
+    var modeDescription: String {
+        switch self {
+        case .powerSupply:
+            return "AC power switches to battery"
+        case .terminalCommandError:
+            return "Terminal command is not found"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .powerSupply:
+            return "bolt.fill"
+        case .terminalCommandError:
+            return "terminal.fill"
+        }
+    }
+
+    fileprivate var customSoundFileNameKey: String {
+        switch self {
+        case .powerSupply:
+            return "CustomPowerSoundFileName"
+        case .terminalCommandError:
+            return "CustomTerminalCommandErrorSoundFileName"
+        }
+    }
+
+    fileprivate var destinationBaseName: String {
+        switch self {
+        case .powerSupply:
+            return "CustomPowerSound"
+        case .terminalCommandError:
+            return "CustomTerminalCommandErrorSound"
+        }
+    }
+}
+
+extension Notification.Name {
+    static let fahhPlayerTerminalCommandNotFound = Notification.Name("FahhPlayerTerminalCommandNotFound")
+}
+
 final class PowerObserver: ObservableObject {
-    @Published var currentSoundName: String
-    private let customSoundFileNameKey = "CustomSoundFileName"
+    @Published private(set) var powerSupplySoundName: String
+    @Published private(set) var terminalCommandErrorSoundName: String
+    private let legacyCustomSoundFileNameKey = "CustomSoundFileName"
 
     // Track last known power state to only play on transitions
     private var lastPowerSourceState: String?
     private var powerRunLoopSource: CFRunLoopSource?
+    private var notificationObservers: [NSObjectProtocol] = []
 
     // Audio player for playback (replaces external afplay process)
     private var audioPlayer: AVAudioPlayer?
 
     init() {
-        currentSoundName = Self.defaultSoundName
-        loadSavedSoundName()
+        powerSupplySoundName = Self.defaultSoundName
+        terminalCommandErrorSoundName = Self.defaultSoundName
+        migrateLegacyPowerSoundPreference()
+        loadSavedSoundNames()
+        registerTerminalCommandObserver()
         registerPowerObserver()
         // Initialize last state to avoid playing immediately on first callback
         lastPowerSourceState = readPowerSourceState()
@@ -36,33 +97,43 @@ final class PowerObserver: ObservableObject {
         if let powerRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetCurrent(), powerRunLoopSource, .defaultMode)
         }
+        notificationObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     static var defaultSoundName: String {
         bundledDefaultSoundURL() == nil ? "System Alert" : "Bundled Fahh"
     }
 
-    var hasCustomSound: Bool {
-        customSoundURL != nil
+    func soundName(for event: SoundEvent) -> String {
+        switch event {
+        case .powerSupply:
+            return powerSupplySoundName
+        case .terminalCommandError:
+            return terminalCommandErrorSoundName
+        }
+    }
+
+    func hasCustomSound(for event: SoundEvent) -> Bool {
+        customSoundURL(for: event) != nil
     }
 
     // MARK: - File Selection & Bookmarking
-    func selectCustomSound() {
+    func selectCustomSound(for event: SoundEvent) {
         activateForegroundUI()
 
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.mp3, .wav, .audio]
-        panel.title = "Choose a sound file"
-        panel.message = "Select an MP3 or WAV file to play on power events."
+        panel.title = "Choose \(event.title)"
+        panel.message = "Select an MP3, WAV, or standard macOS audio file for \(event.modeDescription.lowercased())."
 
         if panel.runModal() == .OK, let url = panel.url {
-            importCustomSound(from: url)
+            importCustomSound(from: url, for: event)
         }
     }
 
-    private func importCustomSound(from url: URL) {
+    private func importCustomSound(from url: URL, for event: SoundEvent) {
         let startedAccessing = url.startAccessingSecurityScopedResource()
         defer {
             if startedAccessing {
@@ -71,26 +142,28 @@ final class PowerObserver: ObservableObject {
         }
 
         do {
-            let importedURL = try persistCustomSound(from: url)
-            UserDefaults.standard.set(importedURL.lastPathComponent, forKey: customSoundFileNameKey)
-            currentSoundName = importedURL.lastPathComponent
+            let importedURL = try persistCustomSound(from: url, for: event)
+            UserDefaults.standard.set(importedURL.lastPathComponent, forKey: event.customSoundFileNameKey)
+            setSoundName(importedURL.lastPathComponent, for: event)
         } catch {
             presentAlert(message: "Couldn’t import selected sound", info: error.localizedDescription, buttons: ["OK"])
         }
     }
 
     // MARK: - Playback
-    func testSound() {
-        playSound()
+    func testSound(for event: SoundEvent) {
+        playSound(for: event)
     }
 
-    func playSound() {
-        if let url = customSoundURL {
+    func playSound(for event: SoundEvent, showsPlaybackErrors: Bool = true) {
+        if let url = customSoundURL(for: event) {
             do {
                 try play(url: url)
                 return
             } catch {
-                presentAlert(message: "Couldn’t open saved sound", info: error.localizedDescription, buttons: ["OK"])
+                if showsPlaybackErrors {
+                    presentAlert(message: "Couldn’t open saved sound", info: error.localizedDescription, buttons: ["OK"])
+                }
                 // Fall through to default sound
             }
         }
@@ -100,7 +173,9 @@ final class PowerObserver: ObservableObject {
             do {
                 try play(url: defaultURL)
             } catch {
-                presentAlert(message: "Failed to play default sound", info: error.localizedDescription, buttons: ["OK"])
+                if showsPlaybackErrors {
+                    presentAlert(message: "Failed to play default sound", info: error.localizedDescription, buttons: ["OK"])
+                }
             }
         } else {
             NSSound.beep()
@@ -122,22 +197,22 @@ final class PowerObserver: ObservableObject {
         }
     }
 
-    func resetToDefault() {
-        if let customSoundURL {
-            try? FileManager.default.removeItem(at: customSoundURL)
+    func resetToDefault(for event: SoundEvent) {
+        if let url = customSoundURL(for: event) {
+            try? FileManager.default.removeItem(at: url)
         }
-        UserDefaults.standard.removeObject(forKey: customSoundFileNameKey)
-        currentSoundName = Self.defaultSoundName
+        UserDefaults.standard.removeObject(forKey: event.customSoundFileNameKey)
+        setSoundName(Self.defaultSoundName, for: event)
     }
 
-    private func loadSavedSoundName() {
-        if let customSoundURL {
-            currentSoundName = customSoundURL.lastPathComponent
+    private func loadSavedSoundNames() {
+        for event in SoundEvent.allCases {
+            setSoundName(customSoundURL(for: event)?.lastPathComponent ?? Self.defaultSoundName, for: event)
         }
     }
 
-    private var customSoundURL: URL? {
-        guard let fileName = UserDefaults.standard.string(forKey: customSoundFileNameKey) else {
+    private func customSoundURL(for event: SoundEvent) -> URL? {
+        guard let fileName = UserDefaults.standard.string(forKey: event.customSoundFileNameKey) else {
             return nil
         }
 
@@ -145,19 +220,16 @@ final class PowerObserver: ObservableObject {
         return FileManager.default.fileExists(atPath: candidateURL.path) ? candidateURL : nil
     }
 
-    private func persistCustomSound(from sourceURL: URL) throws -> URL {
+    private func persistCustomSound(from sourceURL: URL, for event: SoundEvent) throws -> URL {
         let fileManager = FileManager.default
         let destinationDirectory = customSoundStorageDirectory()
         try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
 
         let fileExtension = sourceURL.pathExtension.isEmpty ? "mp3" : sourceURL.pathExtension
-        let destinationURL = destinationDirectory.appendingPathComponent("CustomPowerSound").appendingPathExtension(fileExtension)
+        let destinationURL = destinationDirectory.appendingPathComponent(event.destinationBaseName).appendingPathExtension(fileExtension)
 
-        let existingFiles = try? fileManager.contentsOfDirectory(at: destinationDirectory, includingPropertiesForKeys: nil)
-        existingFiles?.forEach { existingURL in
-            if existingURL.lastPathComponent != destinationURL.lastPathComponent {
-                try? fileManager.removeItem(at: existingURL)
-            }
+        if let existingURL = customSoundURL(for: event), existingURL != destinationURL {
+            try? fileManager.removeItem(at: existingURL)
         }
 
         if fileManager.fileExists(atPath: destinationURL.path) {
@@ -166,6 +238,25 @@ final class PowerObserver: ObservableObject {
 
         try fileManager.copyItem(at: sourceURL, to: destinationURL)
         return destinationURL
+    }
+
+    private func setSoundName(_ soundName: String, for event: SoundEvent) {
+        switch event {
+        case .powerSupply:
+            powerSupplySoundName = soundName
+        case .terminalCommandError:
+            terminalCommandErrorSoundName = soundName
+        }
+    }
+
+    private func migrateLegacyPowerSoundPreference() {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: SoundEvent.powerSupply.customSoundFileNameKey) == nil,
+              let legacyFileName = defaults.string(forKey: legacyCustomSoundFileNameKey) else {
+            return
+        }
+
+        defaults.set(legacyFileName, forKey: SoundEvent.powerSupply.customSoundFileNameKey)
     }
 
     private func customSoundStorageDirectory() -> URL {
@@ -199,9 +290,21 @@ final class PowerObserver: ObservableObject {
 
         if shouldPlay {
             DispatchQueue.main.async {
-                observer.playSound()
+                observer.playSound(for: .powerSupply)
             }
         }
+    }
+
+    // MARK: - Terminal Command Monitoring
+    private func registerTerminalCommandObserver() {
+        let observer = NotificationCenter.default.addObserver(
+            forName: .fahhPlayerTerminalCommandNotFound,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.playSound(for: .terminalCommandError, showsPlaybackErrors: false)
+        }
+        notificationObservers.append(observer)
     }
 
     // MARK: - Power Source Monitoring (play only on AC → Battery transitions)
